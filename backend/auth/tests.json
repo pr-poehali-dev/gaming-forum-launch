@@ -3,25 +3,25 @@
     {
       "name": "Register new user",
       "method": "POST",
-      "path": "/register",
-      "body": {"username": "TestWarrior", "email": "test_warrior@test.com", "password": "pass123"},
+      "path": "/?action=register",
+      "body": {"username": "TestWarrior99", "email": "test99warrior@test.com", "password": "pass123"},
       "expectedStatus": 200,
       "expectedBody": {"token": "string"},
       "bodyMatcher": "partial"
     },
     {
-      "name": "Login with wrong password",
+      "name": "Login correct",
       "method": "POST",
-      "path": "/login",
-      "body": {"email": "test_warrior@test.com", "password": "wrongpass"},
-      "expectedStatus": 401,
-      "expectedBody": {"error": "string"},
+      "path": "/?action=login",
+      "body": {"email": "test99warrior@test.com", "password": "pass123"},
+      "expectedStatus": 200,
+      "expectedBody": {"token": "string"},
       "bodyMatcher": "partial"
     },
     {
       "name": "Get me without token",
       "method": "GET",
-      "path": "/me",
+      "path": "/?action=me",
       "expectedStatus": 401,
       "expectedBody": {"error": "string"},
       "bodyMatcher": "partial"

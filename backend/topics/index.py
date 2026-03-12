@@ -1,4 +1,5 @@
-"""Темы форума: список, создание, просмотр, комментарии"""
+"""Темы и посты форума Stalshield.
+action=list | categories | create | get | reply"""
 import json
 import os
 import psycopg2
@@ -32,25 +33,41 @@ def get_user_from_token(conn, token: str):
         return dict(zip(["id", "username", "avatar_emoji", "level", "badge"], row))
 
 
+def fmt_dt(val):
+    return val.isoformat() if val and hasattr(val, "isoformat") else None
+
+
 def handler(event: dict, context) -> dict:
     if event.get("httpMethod") == "OPTIONS":
         return {"statusCode": 200, "headers": CORS, "body": ""}
 
     method = event.get("httpMethod", "GET")
-    path = event.get("path", "/")
     headers = event.get("headers", {})
     token = headers.get("X-Auth-Token") or headers.get("x-auth-token", "")
-    params = event.get("queryStringParameters") or {}
+    qp = event.get("queryStringParameters") or {}
+    action = qp.get("action", "list")
+
+    body = {}
+    if event.get("body"):
+        body = json.loads(event["body"])
 
     conn = get_conn()
     try:
         user = get_user_from_token(conn, token)
 
-        # GET / — список тем
-        if method == "GET" and (path.endswith("/topics") or path.endswith("/topics/")):
-            limit = int(params.get("limit", 20))
-            offset = int(params.get("offset", 0))
-            category_id = params.get("category_id")
+        # GET categories
+        if action == "categories":
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT id, name, description, icon, color, topics_count FROM {SCHEMA}.categories ORDER BY id")
+                rows = cur.fetchall()
+                cats = [dict(zip(["id", "name", "description", "icon", "color", "topics_count"], r)) for r in rows]
+            return {"statusCode": 200, "headers": CORS, "body": json.dumps({"categories": cats})}
+
+        # GET list
+        if action == "list":
+            limit = int(qp.get("limit", 20))
+            offset = int(qp.get("offset", 0))
+            category_id = qp.get("category_id")
 
             with conn.cursor() as cur:
                 base = f"""
@@ -73,17 +90,16 @@ def handler(event: dict, context) -> dict:
                 topics = []
                 for row in rows:
                     t = dict(zip(cols, row))
-                    t["created_at"] = t["created_at"].isoformat() if t["created_at"] else None
+                    t["created_at"] = fmt_dt(t["created_at"])
                     topics.append(t)
 
             return {"statusCode": 200, "headers": CORS, "body": json.dumps({"topics": topics})}
 
-        # POST / — создать тему
-        if method == "POST" and (path.endswith("/topics") or path.endswith("/topics/")):
+        # POST create
+        if action == "create":
             if not user:
                 return {"statusCode": 401, "headers": CORS, "body": json.dumps({"error": "Нужно войти"})}
 
-            body = json.loads(event.get("body") or "{}")
             title = (body.get("title") or "").strip()
             content = (body.get("content") or "").strip()
             category_id = body.get("category_id")
@@ -104,7 +120,6 @@ def handler(event: dict, context) -> dict:
                         f"UPDATE {SCHEMA}.categories SET topics_count = topics_count + 1 WHERE id = %s",
                         (category_id,)
                     )
-
                 cur.execute(
                     f"UPDATE {SCHEMA}.users SET xp = xp + 10, posts_count = posts_count + 1 WHERE id = %s",
                     (user["id"],)
@@ -113,10 +128,12 @@ def handler(event: dict, context) -> dict:
 
             return {"statusCode": 200, "headers": CORS, "body": json.dumps({"ok": True, "topic_id": topic_id})}
 
-        # GET /topics/{id} — одна тема с постами
-        parts = path.strip("/").split("/")
-        if method == "GET" and len(parts) >= 2 and parts[-2] in ("topics",):
-            topic_id = parts[-1]
+        # GET get
+        if action == "get":
+            topic_id = qp.get("id")
+            if not topic_id:
+                return {"statusCode": 400, "headers": CORS, "body": json.dumps({"error": "Нужен id темы"})}
+
             with conn.cursor() as cur:
                 cur.execute(
                     f"""SELECT t.id, t.title, t.content, t.views, t.replies_count, t.is_hot,
@@ -135,7 +152,7 @@ def handler(event: dict, context) -> dict:
 
                 cols = ["id", "title", "content", "views", "replies_count", "is_hot", "created_at", "category_id", "author", "avatar", "category_name"]
                 topic = dict(zip(cols, row))
-                topic["created_at"] = topic["created_at"].isoformat() if topic["created_at"] else None
+                topic["created_at"] = fmt_dt(topic["created_at"])
 
                 cur.execute(f"UPDATE {SCHEMA}.topics SET views = views + 1 WHERE id = %s", (topic_id,))
 
@@ -146,34 +163,26 @@ def handler(event: dict, context) -> dict:
                         WHERE p.topic_id = %s ORDER BY p.created_at ASC""",
                     (topic_id,)
                 )
-                post_rows = cur.fetchall()
                 posts = []
-                for pr in post_rows:
+                for pr in cur.fetchall():
                     po = dict(zip(["id", "content", "likes", "created_at", "author", "avatar"], pr))
-                    po["created_at"] = po["created_at"].isoformat() if po["created_at"] else None
+                    po["created_at"] = fmt_dt(po["created_at"])
                     posts.append(po)
 
                 conn.commit()
 
             return {"statusCode": 200, "headers": CORS, "body": json.dumps({"topic": topic, "posts": posts})}
 
-        # POST /topics/{id}/reply
-        if method == "POST" and "/reply" in path:
+        # POST reply
+        if action == "reply":
             if not user:
                 return {"statusCode": 401, "headers": CORS, "body": json.dumps({"error": "Нужно войти"})}
 
-            parts2 = path.strip("/").split("/")
-            topic_id = None
-            for i, p in enumerate(parts2):
-                if p == "reply" and i > 0:
-                    topic_id = parts2[i - 1]
-            if not topic_id:
-                return {"statusCode": 400, "headers": CORS, "body": json.dumps({"error": "topic_id не найден"})}
-
-            body = json.loads(event.get("body") or "{}")
+            topic_id = body.get("topic_id") or qp.get("id")
             content = (body.get("content") or "").strip()
-            if not content:
-                return {"statusCode": 400, "headers": CORS, "body": json.dumps({"error": "Текст обязателен"})}
+
+            if not topic_id or not content:
+                return {"statusCode": 400, "headers": CORS, "body": json.dumps({"error": "topic_id и content обязательны"})}
 
             with conn.cursor() as cur:
                 cur.execute(
@@ -193,15 +202,7 @@ def handler(event: dict, context) -> dict:
 
             return {"statusCode": 200, "headers": CORS, "body": json.dumps({"ok": True, "post_id": post_id})}
 
-        # GET /categories
-        if method == "GET" and path.endswith("/categories"):
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT id, name, description, icon, color, topics_count FROM {SCHEMA}.categories ORDER BY id")
-                rows = cur.fetchall()
-                cats = [dict(zip(["id", "name", "description", "icon", "color", "topics_count"], r)) for r in rows]
-            return {"statusCode": 200, "headers": CORS, "body": json.dumps({"categories": cats})}
-
-        return {"statusCode": 404, "headers": CORS, "body": json.dumps({"error": "Not found"})}
+        return {"statusCode": 400, "headers": CORS, "body": json.dumps({"error": "Укажи action: list | categories | create | get | reply"})}
 
     finally:
         conn.close()

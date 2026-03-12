@@ -1,8 +1,10 @@
-"""Авторизация: регистрация, вход, выход, получение профиля"""
+"""Авторизация: регистрация, вход, выход, получение и обновление профиля.
+action=register | login | me | profile | logout"""
 import json
 import os
 import hashlib
 import secrets
+import random
 import psycopg2
 
 SCHEMA = "t_p60836273_gaming_forum_launch"
@@ -43,15 +45,19 @@ def handler(event: dict, context) -> dict:
         return {"statusCode": 200, "headers": CORS, "body": ""}
 
     method = event.get("httpMethod", "GET")
-    path = event.get("path", "/")
     headers = event.get("headers", {})
     token = headers.get("X-Auth-Token") or headers.get("x-auth-token", "")
+    qp = event.get("queryStringParameters") or {}
+    action = qp.get("action", "")
+
+    body = {}
+    if event.get("body"):
+        body = json.loads(event["body"])
 
     conn = get_conn()
     try:
-        # POST /register
-        if method == "POST" and path.endswith("/register"):
-            body = json.loads(event.get("body") or "{}")
+        # register
+        if action == "register":
             username = (body.get("username") or "").strip()
             email = (body.get("email") or "").strip().lower()
             password = body.get("password") or ""
@@ -63,7 +69,6 @@ def handler(event: dict, context) -> dict:
             if len(password) < 6:
                 return {"statusCode": 400, "headers": CORS, "body": json.dumps({"error": "Пароль минимум 6 символов"})}
 
-            import random
             avatar = random.choice(AVATARS)
             pw_hash = hash_password(password)
 
@@ -94,13 +99,12 @@ def handler(event: dict, context) -> dict:
                 "headers": CORS,
                 "body": json.dumps({
                     "token": session_token,
-                    "user": {"id": user_id, "username": username, "email": email, "avatar_emoji": avatar, "xp": 0, "level": 1, "badge": "newcomer", "posts_count": 0}
+                    "user": {"id": user_id, "username": username, "email": email, "avatar_emoji": avatar, "xp": 0, "level": 1, "badge": "newcomer", "posts_count": 0, "bio": "", "favorite_game": ""}
                 })
             }
 
-        # POST /login
-        if method == "POST" and path.endswith("/login"):
-            body = json.loads(event.get("body") or "{}")
+        # login
+        if action == "login":
             email = (body.get("email") or "").strip().lower()
             password = body.get("password") or ""
 
@@ -110,7 +114,8 @@ def handler(event: dict, context) -> dict:
             pw_hash = hash_password(password)
             with conn.cursor() as cur:
                 cur.execute(
-                    f"SELECT id, username, email, avatar_emoji, xp, level, badge, posts_count, bio, favorite_game FROM {SCHEMA}.users WHERE email = %s AND password_hash = %s",
+                    f"""SELECT id, username, email, avatar_emoji, xp, level, badge, posts_count, bio, favorite_game
+                        FROM {SCHEMA}.users WHERE email = %s AND password_hash = %s""",
                     (email, pw_hash)
                 )
                 row = cur.fetchone()
@@ -127,31 +132,29 @@ def handler(event: dict, context) -> dict:
                 )
                 conn.commit()
 
-            return {
-                "statusCode": 200,
-                "headers": CORS,
-                "body": json.dumps({"token": session_token, "user": user})
-            }
+            return {"statusCode": 200, "headers": CORS, "body": json.dumps({"token": session_token, "user": user})}
 
-        # GET /me
-        if method == "GET" and path.endswith("/me"):
+        # me
+        if action == "me":
             if not token:
                 return {"statusCode": 401, "headers": CORS, "body": json.dumps({"error": "Не авторизован"})}
             user = get_user_from_token(conn, token)
             if not user:
                 return {"statusCode": 401, "headers": CORS, "body": json.dumps({"error": "Сессия устарела"})}
             user.pop("password_hash", None)
+            for key, val in user.items():
+                if hasattr(val, "isoformat"):
+                    user[key] = val.isoformat()
             return {"statusCode": 200, "headers": CORS, "body": json.dumps(user)}
 
-        # PUT /profile
-        if method == "PUT" and path.endswith("/profile"):
+        # profile update
+        if action == "profile":
             if not token:
                 return {"statusCode": 401, "headers": CORS, "body": json.dumps({"error": "Не авторизован"})}
             user = get_user_from_token(conn, token)
             if not user:
                 return {"statusCode": 401, "headers": CORS, "body": json.dumps({"error": "Сессия устарела"})}
 
-            body = json.loads(event.get("body") or "{}")
             username = (body.get("username") or user["username"]).strip()
             bio = (body.get("bio") or "").strip()
             favorite_game = (body.get("favorite_game") or "").strip()
@@ -159,23 +162,22 @@ def handler(event: dict, context) -> dict:
 
             with conn.cursor() as cur:
                 cur.execute(
-                    f"""UPDATE {SCHEMA}.users SET username=%s, bio=%s, favorite_game=%s, avatar_emoji=%s
-                        WHERE id=%s""",
+                    f"""UPDATE {SCHEMA}.users SET username=%s, bio=%s, favorite_game=%s, avatar_emoji=%s WHERE id=%s""",
                     (username, bio, favorite_game, avatar_emoji, user["id"])
                 )
                 conn.commit()
 
             return {"statusCode": 200, "headers": CORS, "body": json.dumps({"ok": True, "username": username, "bio": bio, "favorite_game": favorite_game, "avatar_emoji": avatar_emoji})}
 
-        # POST /logout
-        if method == "POST" and path.endswith("/logout"):
+        # logout
+        if action == "logout":
             if token:
                 with conn.cursor() as cur:
                     cur.execute(f"UPDATE {SCHEMA}.sessions SET expires_at = NOW() WHERE token = %s", (token,))
                     conn.commit()
             return {"statusCode": 200, "headers": CORS, "body": json.dumps({"ok": True})}
 
-        return {"statusCode": 404, "headers": CORS, "body": json.dumps({"error": "Not found"})}
+        return {"statusCode": 400, "headers": CORS, "body": json.dumps({"error": "Укажи action: register | login | me | profile | logout"})}
 
     finally:
         conn.close()
