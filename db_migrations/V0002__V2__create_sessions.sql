@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS t_p60836273_gaming_forum_launch.sessions (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  token VARCHAR(64) UNIQUE NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW(),
+  expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '30 days'
+);

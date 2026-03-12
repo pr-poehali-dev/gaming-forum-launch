@@ -1,0 +1,29 @@
+{
+  "tests": [
+    {
+      "name": "Get topics list",
+      "method": "GET",
+      "path": "/topics",
+      "expectedStatus": 200,
+      "expectedBody": {"topics": []},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Get categories",
+      "method": "GET",
+      "path": "/categories",
+      "expectedStatus": 200,
+      "expectedBody": {"categories": []},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Create topic without auth",
+      "method": "POST",
+      "path": "/topics",
+      "body": {"title": "Test", "content": "Test content"},
+      "expectedStatus": 401,
+      "expectedBody": {"error": "string"},
+      "bodyMatcher": "partial"
+    }
+  ]
+}
